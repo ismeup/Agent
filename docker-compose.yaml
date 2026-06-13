@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  agent:
+    build: .
+    container_name: ismeup-agent
+    restart: always
+    volumes:
+      - ./data:/app/data
+    environment:
+      - ISMEUP_HOST=${ISMEUP_HOST}
+      - ISMEUP_PORT=${ISMEUP_PORT}
+      - ISMEUP_URL=${ISMEUP_URL}
+

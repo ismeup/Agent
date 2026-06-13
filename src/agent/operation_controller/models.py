@@ -1,0 +1,13 @@
+from enum import Enum
+
+class Operations(Enum):
+    PING = "PING"
+    LOAD_TIME = "LOAD_TIME"
+    STATUS_OK = "STATUS_OK"
+    PORT_OPEN = "PORT_OPEN"
+    CERTIFICATE_OK = "CERTIFICATE_OK"
+    CONTENT_CHECK = "CONTENT_CHECK"
+    MEMORY = "MEMORY"
+    UPTIME = "UPTIME"
+    LOAD_AVERAGE = "LOAD_AVERAGE"
+    DISK_USAGE = "DISK_USAGE"
