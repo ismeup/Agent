@@ -11,6 +11,9 @@ from agent.models.memory_check import MemoryCheck
 from agent.models.uptime_check import UptimeCheck
 from agent.models.load_average_check import LoadAverageCheck
 from agent.models.disk_usage_check import DiskUsageCheck
+from agent.models.info_check import InfoCheck
+from agent.models.custom_boolean_check import CustomBooleanCheck
+from agent.models.custom_double_check import CustomDoubleCheck
 
 class OperationController:
     def start_check(self, json_object: dict) -> dict:
@@ -36,6 +39,9 @@ class OperationController:
             "uptime": (Operations.UPTIME, UptimeCheck),
             "loadavg": (Operations.LOAD_AVERAGE, LoadAverageCheck),
             "disk": (Operations.DISK_USAGE, DiskUsageCheck),
+            "info": (Operations.INFO, InfoCheck),
+            "custom_boolean": (Operations.CUSTOM_BOOLEAN, CustomBooleanCheck),
+            "custom_double": (Operations.CUSTOM_DOUBLE, CustomDoubleCheck),
         }
         
         if operation not in mapping:
