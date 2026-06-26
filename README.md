@@ -6,9 +6,25 @@ A monitoring agent for [isMeUp](https://ismeup.net). Install it on your server t
 
 ## Table of Contents
 
+- [Quick Install](#quick-install)
 - [Running with Docker](#running-with-docker)
 - [Running without Docker](#running-without-docker)
 - [Environment Variables](#environment-variables)
+
+---
+
+## Quick Install
+
+The fastest way to install the agent on a Linux server:
+
+```bash
+curl -sSL https://raw.githubusercontent.com/ismeup/Agent/main/install.sh -o install.sh
+bash install.sh
+```
+
+The script will check that Docker and Git are available, clone the repository, build the image, run the interactive registration, and start the service.
+
+> The installer requires an interactive terminal and will not work when piped directly (`curl ... | bash`).
 
 ---
 
