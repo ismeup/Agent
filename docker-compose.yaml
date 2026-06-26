@@ -4,7 +4,7 @@ services:
   agent:
     build: .
     container_name: ismeup-agent
-    restart: always
+    restart: unless-stopped
     volumes:
       - ./data:/app/data
     environment:
