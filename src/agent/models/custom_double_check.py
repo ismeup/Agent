@@ -18,9 +18,9 @@ class CustomDoubleCheck(CheckerMonitor):
     def parse_result(self, result: str):
         self.value = float(result)
         if self.direction == 1:
-            self.status = self.value > self.limit
+            self.status = self.value != -1.0 and self.value > self.limit
         else:
-            self.status = self.value < self.limit
+            self.status = self.value != -1.0 and self.value < self.limit
 
     def parse_check_parameters(self, check_operation_parameter: dict):
         self.name = check_operation_parameter.get("name", "")
