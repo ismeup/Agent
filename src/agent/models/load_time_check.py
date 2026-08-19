@@ -1,6 +1,6 @@
 import time
 from agent.interfaces.checker import Checker
-from agent.models.http_session import create_session
+from agent.models.http_session import fetch_url
 
 class LoadTimeCheck(Checker):
     def __init__(self):
@@ -15,12 +15,9 @@ class LoadTimeCheck(Checker):
 
         try:
             before = time.time()
-            with create_session() as session:
-                response = session.get(self.url, timeout=5.0, stream=True, verify=False)
-                _ = next(response.iter_content(1024), None)
-                response.close()
-
+            status_code, content = fetch_url(self.url, timeout=5.0)
             after = time.time()
+
             self.time_elapsed = after - before
             self.status = self.time_elapsed < self.time_limit
         except Exception:

@@ -1,7 +1,7 @@
 import base64
 import json
 import uuid
-import requests
+from agent.models.http_session import fetch_url
 from abc import abstractmethod
 from Crypto.Cipher import AES
 from Crypto.Hash import SHA1
@@ -50,9 +50,9 @@ class CheckerMonitor(Checker):
                 encrypted = self._encrypt(json.dumps(data).encode('utf-8'))
                 data_to_send = base64.b64encode(encrypted)
                 
-                response = requests.post(self.url, data=data_to_send, timeout=5)
+                status_code, body_bytes = fetch_url(self.url, method="POST", data=data_to_send, timeout=5.0, raw=True)
                 
-                encrypted_received = base64.b64decode(response.content)
+                encrypted_received = base64.b64decode(body_bytes)
                 decrypted_received = self._decrypt(encrypted_received)
                 
                 string_result = decrypted_received.decode('utf-8')
