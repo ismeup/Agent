@@ -1,6 +1,6 @@
 from agent.interfaces.checker import Checker
 from agent.models.user_agent import get_headers
-from agent.models.http_session import create_session
+from agent.models.http_session import fetch_url
 
 class ContentCheck(Checker):
     def __init__(self):
@@ -12,9 +12,7 @@ class ContentCheck(Checker):
         must_contain = bool(params.get("must_contain", False))
 
         try:
-            with create_session() as session:
-                response = session.get(url, headers=get_headers(), timeout=5.0, verify=False)
-                content = response.text
+            status_code, content = fetch_url(url, timeout=5.0, headers=get_headers())
 
             if must_contain:
                 self.status = (text in content)
