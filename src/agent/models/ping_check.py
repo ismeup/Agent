@@ -15,7 +15,7 @@ class PingCheck(Checker):
         
         while not self.status and self.fail_counter < self.MAX_FAIL_CHECK:
             try:
-                cmd = ["ping", "-n", "1", self.host] if platform.system().lower() == "windows" else ["ping", "-c", "1", self.host]
+                cmd = ["ping", "-n", "1", "-w", "1000", self.host] if platform.system().lower() == "windows" else ["ping", "-c", "1", "-W", "1", self.host]
                 result = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
                 self.status = (result.returncode == 0)
             except Exception:
