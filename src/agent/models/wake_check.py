@@ -55,7 +55,7 @@ class WakeOnLanCheck(Checker):
             return "255.255.255.255"
         iface = m.group(1)
         addr = subprocess.run(["ip", "-o", "-f", "inet", "addr", "show", "dev", iface], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, timeout=10)
-        m2 = re.search(r"broadcast\s+(\S+)", addr.stdout.decode("utf-8", errors="ignore"))
+        m2 = re.search(r"(?:brd|broadcast)\s+(\S+)", addr.stdout.decode("utf-8", errors="ignore"))
         if m2:
             return m2.group(1)
         return "255.255.255.255"
