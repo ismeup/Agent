@@ -5,7 +5,7 @@ services:
     build: .
     container_name: ismeup-agent
     restart: unless-stopped
-    network_mode: host
+    network_mode: host # Wake On Lan requires this network mode
     volumes:
       - ./data:/app/data
     environment:
