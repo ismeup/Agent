@@ -9,6 +9,7 @@ from Crypto.Cipher import AES
 from Crypto.Hash import SHA1
 from Crypto.Util.Padding import pad, unpad
 
+from agent.config import AGENT_VERSION
 from agent.exceptions import RemoteConnectException
 from agent.operation_controller.operation_controller import OperationController
 
@@ -88,7 +89,7 @@ class RemoteClient:
         self.last_success_packet = time.time() * 1000
 
     def negotiate(self):
-        payload = {"iam": self.identity, "aes": self.aes_key}
+        payload = {"iam": self.identity, "aes": self.aes_key, "version": AGENT_VERSION}
         message_bytes = json.dumps(payload).encode('utf-8')
         encrypted_data = self.rsa_cipher.encrypt(message_bytes)
         self.send_bytes_raw(encrypted_data)

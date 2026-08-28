@@ -14,3 +14,5 @@ class Operations(Enum):
     INFO = "INFO"
     CUSTOM_BOOLEAN = "CUSTOM_BOOLEAN"
     CUSTOM_DOUBLE = "CUSTOM_DOUBLE"
+    GET_MAC = "GET_MAC"
+    WAKE = "WAKE"

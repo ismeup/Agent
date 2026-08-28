@@ -7,6 +7,7 @@ from Crypto.Cipher import PKCS1_v1_5
 from agent.config import KEY_FILE
 from agent.client.connection_data import ConnectionData
 from agent.client.client_manager import ClientManager
+from agent.version_check import start_version_check
 
 class RunController:
     def run(self, args: list):
@@ -18,6 +19,7 @@ class RunController:
         cipher = self.get_cipher()
         
         if cipher and identity:
+            start_version_check(connection_data)
             ClientManager(connection_data, identity, cipher)
         else:
             print("Can not init RSA cipher")

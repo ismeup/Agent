@@ -14,6 +14,8 @@ from agent.models.disk_usage_check import DiskUsageCheck
 from agent.models.info_check import InfoCheck
 from agent.models.custom_boolean_check import CustomBooleanCheck
 from agent.models.custom_double_check import CustomDoubleCheck
+from agent.models.mac_check import MacCheck
+from agent.models.wake_check import WakeOnLanCheck
 
 class OperationController:
     def start_check(self, json_object: dict) -> dict:
@@ -42,6 +44,8 @@ class OperationController:
             "info": (Operations.INFO, InfoCheck),
             "custom_boolean": (Operations.CUSTOM_BOOLEAN, CustomBooleanCheck),
             "custom_double": (Operations.CUSTOM_DOUBLE, CustomDoubleCheck),
+            "get_mac": (Operations.GET_MAC, MacCheck),
+            "wake": (Operations.WAKE, WakeOnLanCheck),
         }
         
         if operation not in mapping:
