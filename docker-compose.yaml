@@ -5,7 +5,14 @@ services:
     build: .
     container_name: ismeup-agent
     restart: unless-stopped
-    network_mode: host # Wake On Lan requires this network mode
+    # Wake On Lan requires sending UDP broadcast packets to the local subnet,
+    # which is impossible from a Docker bridge network, so the agent uses
+    # host networking. Trade-offs: the container shares the host's network
+    # namespace (no network isolation, no port mapping). Host networking is
+    # not supported by Docker Desktop for macOS/Windows. If you don't use the
+    # Wake On Lan check, this line can be removed — the agent only makes
+    # outbound connections.
+    network_mode: host
     volumes:
       - ./data:/app/data
     environment:

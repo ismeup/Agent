@@ -64,6 +64,18 @@ docker compose down
 docker compose restart agent
 ```
 
+### Note on host networking
+
+The agent runs with `network_mode: host` because the Wake On Lan check sends UDP broadcast packets to the local subnet, which is not possible from a Docker bridge network.
+
+Trade-offs of host networking:
+
+- The container shares the host's network namespace — there is no network isolation between the container and the host.
+- Port mapping is not available. The agent only makes outbound connections, so no ports are exposed anyway.
+- Host networking is not supported by Docker Desktop for macOS/Windows — `docker compose up` will fail there.
+
+If you don't need the Wake On Lan check, you can remove the `network_mode: host` line from `docker-compose.yaml`; the agent works fine with the default bridge network.
+
 ---
 
 ## Running without Docker
