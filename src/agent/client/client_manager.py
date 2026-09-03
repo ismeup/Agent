@@ -43,9 +43,17 @@ class ClientManager:
                 should_reconnect = True
 
         if should_reconnect:
+            self._stop_port_proxy_tunnels()
             print("### No threads online. Reconnecting in 5 seconds")
             time.sleep(5)
             self.start()
+
+    def _stop_port_proxy_tunnels(self):
+        try:
+            from agent.port_proxy.tunnel import stop_all_tunnels
+            stop_all_tunnels()
+        except Exception as e:
+            print(f"### Failed to stop port-proxy tunnels on Worker disconnect: {e}")
 
     def request_threads(self, count: int):
         from agent.client.remote_client import RemoteClient

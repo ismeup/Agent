@@ -16,3 +16,5 @@ class Operations(Enum):
     CUSTOM_DOUBLE = "CUSTOM_DOUBLE"
     GET_MAC = "GET_MAC"
     WAKE = "WAKE"
+    PORT_PROXY = "PORT_PROXY"
+    PORT_PROXY_CLOSE = "PORT_PROXY_CLOSE"
