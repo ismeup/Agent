@@ -2,15 +2,13 @@ import base64
 import json
 import socket
 import threading
-import uuid
 from typing import Optional
 
-from Crypto.Cipher import AES, PKCS1_v1_5
-from Crypto.Hash import SHA1
+from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
-from Crypto.Util.Padding import pad, unpad
 
-MAX_FRAME_BYTES = 1024 * 1024
+from agent import protocol
+
 CONNECT_TIMEOUT_SECONDS = 10
 UDP_IDLE_TIMEOUT = 60
 
@@ -84,64 +82,22 @@ class PortProxyTunnel:
                 self._close_socket(s)
             self.targets.clear()
 
-    # ---------- crypto ----------
-    def _make_aes(self, aes_key: str) -> None:
-        self.aes_key_bytes = SHA1.new(aes_key.encode("utf-8")).digest()[:16]
-
-    def _aes_encrypt(self, data: bytes) -> bytes:
-        c = AES.new(self.aes_key_bytes, AES.MODE_ECB)
-        return c.encrypt(pad(data, AES.block_size, style="pkcs7"))
-
-    def _aes_decrypt(self, data: bytes) -> bytes:
-        c = AES.new(self.aes_key_bytes, AES.MODE_ECB)
-        return unpad(c.decrypt(data), AES.block_size, style="pkcs7")
-
-    # ---------- framing ----------
-    def _send_frame(self, data: bytes) -> None:
-        with self.send_lock:
-            if self.closed or self.socket is None:
-                return
-            try:
-                self.socket.sendall(f"len:{len(data)}:".encode("utf-8"))
-                self.socket.sendall(b"\x00")
-                self.socket.sendall(data)
-            except OSError:
-                self.stop()
-
-    def _read_frame(self) -> bytes:
-        header = bytearray()
-        while True:
-            b = self.socket.recv(1)
-            if not b:
-                raise ConnectionError("proxy closed connection")
-            if b[0] == 0:
-                break
-            header.append(b[0])
-        length_str = header.decode("utf-8", errors="ignore")
-        if "len:" not in length_str:
-            raise ConnectionError("bad frame header: " + length_str)
-        start = length_str.index("len:") + 4
-        end = length_str.rindex(":")
-        length = int(length_str[start:end])
-        if length > MAX_FRAME_BYTES:
-            raise ConnectionError("frame too large: " + str(length))
-        data = bytearray()
-        while len(data) < length:
-            chunk = self.socket.recv(length - len(data))
-            if not chunk:
-                raise ConnectionError("proxy closed connection mid-frame")
-            data.extend(chunk)
-        return bytes(data)
-
     # ---------- protocol helpers ----------
+    def _send_encrypted(self, body: bytes) -> None:
+        if self.closed or self.socket is None:
+            return
+        try:
+            protocol.write_frame(self.socket, protocol.aes_encrypt(self.aes_key_bytes, body), self.send_lock)
+        except OSError:
+            self.stop()
+
     def _send_control(self, obj: dict) -> None:
-        body = json.dumps(obj).encode("utf-8")
-        self._send_frame(self._aes_encrypt(b"\x01" + body))
+        self._send_encrypted(b"\x01" + json.dumps(obj).encode("utf-8"))
 
     def _send_data(self, sid: str, data: bytes) -> None:
         sid_bytes = sid.encode("utf-8")
         body = len(sid_bytes).to_bytes(2, "big") + sid_bytes + data
-        self._send_frame(self._aes_encrypt(b"\x02" + body))
+        self._send_encrypted(b"\x02" + body)
 
     # ---------- run ----------
     def _run(self) -> None:
@@ -149,20 +105,17 @@ class PortProxyTunnel:
             pubkey = RSA.import_key(base64.b64decode(self.proxy_public_key_b64))
             self.rsa_cipher = PKCS1_v1_5.new(pubkey)
 
-            self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.socket.settimeout(CONNECT_TIMEOUT_SECONDS)
-            self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-            self.socket.connect((self.proxy_host, self.proxy_port))
-            self._enable_tcp_keepalive(self.socket)
+            self.socket = protocol.connect_tcp(
+                self.proxy_host, self.proxy_port,
+                nodelay=True, timeout=CONNECT_TIMEOUT_SECONDS,
+            )
 
-            aes_key = str(uuid.uuid4())
-            self._make_aes(aes_key)
-
-            handshake = {"uid": self.uid, "aes": aes_key, "version": 1}
-            self._send_frame(self.rsa_cipher.encrypt(json.dumps(handshake).encode("utf-8")))
-
-            frame = self._read_frame()
-            hello = self._aes_decrypt(frame).decode("utf-8")
+            aes_key = protocol.generate_aes_key()
+            hello, self.aes_key_bytes = protocol.perform_handshake(
+                self.socket, self.rsa_cipher,
+                {"uid": self.uid, "aes": aes_key, "version": 1},
+                aes_key,
+            )
             if not hello.startswith("HELLO:"):
                 raise ConnectionError("handshake failed: " + hello)
 
@@ -178,8 +131,8 @@ class PortProxyTunnel:
 
     def _reader_loop(self) -> None:
         while not self.closed:
-            frame = self._read_frame()
-            plain = self._aes_decrypt(frame)
+            frame = protocol.read_frame(self.socket, max_bytes=protocol.MAX_FRAME_BYTES)
+            plain = protocol.aes_decrypt(self.aes_key_bytes, frame)
             mtype = plain[0]
             if mtype == 0x01:
                 obj = json.loads(plain[1:].decode("utf-8"))
@@ -274,16 +227,6 @@ class PortProxyTunnel:
             if not self.closed:
                 self._send_control({"t": "close", "sid": sid})
             self._close_stream(sid)
-
-    @staticmethod
-    def _enable_tcp_keepalive(sock: socket.socket) -> None:
-        sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        if hasattr(socket, "TCP_KEEPIDLE"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 30)
-        if hasattr(socket, "TCP_KEEPINTVL"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 10)
-        if hasattr(socket, "TCP_KEEPCNT"):
-            sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 3)
 
     @staticmethod
     def _close_socket(sock) -> None:
