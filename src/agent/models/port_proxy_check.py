@@ -1,7 +1,7 @@
 from typing import Any, Dict
 
 from agent.interfaces.checker import Checker
-from agent.port_proxy.tunnel import PortProxyTunnel
+from agent.port_proxy.tunnel import PortProxyTunnel, READY_TIMEOUT
 
 
 class PortProxyCheck(Checker):
@@ -32,6 +32,11 @@ class PortProxyCheck(Checker):
 
         self.tunnel = tunnel
         tunnel.start()
+        if not tunnel.wait_ready(READY_TIMEOUT):
+            self.status = False
+            self.error = tunnel.error or "tunnel did not become ready"
+            tunnel.stop()
+            return
         self.status = True
 
     def get_operation_result(self) -> Dict[str, Any]:

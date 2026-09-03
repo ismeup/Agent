@@ -2,6 +2,7 @@ import base64
 import json
 import socket
 import threading
+from datetime import datetime
 from typing import Optional
 
 from Crypto.Cipher import PKCS1_v1_5
@@ -9,7 +10,9 @@ from Crypto.PublicKey import RSA
 
 from agent import protocol
 
-CONNECT_TIMEOUT_SECONDS = 10
+TARGET_CONNECT_TIMEOUT = 10
+MAX_STREAMS = 16
+READY_TIMEOUT = protocol.CONNECT_TIMEOUT_SECONDS + 20
 UDP_IDLE_TIMEOUT = 60
 
 _active_tunnels: dict[str, "PortProxyTunnel"] = {}
@@ -46,8 +49,9 @@ def stop_all_tunnels() -> None:
 class PortProxyTunnel:
 
     def __init__(self, uid: str, proxy_host: str, proxy_port: int,
-                 proxy_public_key_b64: str, routing: dict,
-                 udp_idle_timeout: float = UDP_IDLE_TIMEOUT):
+                  proxy_public_key_b64: str, routing: dict,
+                  udp_idle_timeout: float = UDP_IDLE_TIMEOUT,
+                  max_streams: int = MAX_STREAMS):
         self.uid = uid
         self.proxy_host = proxy_host
         self.proxy_port = int(proxy_port)
@@ -57,12 +61,14 @@ class PortProxyTunnel:
         self.target_port = int(self.routing.get("port", 0))
         self.protocol = str(self.routing.get("protocol") or "tcp").lower()
         self.udp_idle_timeout = udp_idle_timeout
+        self.max_streams = int(max_streams)
 
         self.socket: Optional[socket.socket] = None
         self.send_lock = threading.Lock()
         self.targets_lock = threading.Lock()
         self.targets: dict[str, socket.socket] = {}
         self.closed = False
+        self.ready_event = threading.Event()
         self.aes_key_bytes: Optional[bytes] = None
         self.rsa_cipher: Optional[PKCS1_v1_5.PKCS115_Cipher] = None
         self.thread: Optional[threading.Thread] = None
@@ -81,6 +87,10 @@ class PortProxyTunnel:
             for s in self.targets.values():
                 self._close_socket(s)
             self.targets.clear()
+
+    def wait_ready(self, timeout: float) -> bool:
+        self.ready_event.wait(timeout)
+        return self.error == ""
 
     # ---------- protocol helpers ----------
     def _send_encrypted(self, body: bytes) -> None:
@@ -107,7 +117,7 @@ class PortProxyTunnel:
 
             self.socket = protocol.connect_tcp(
                 self.proxy_host, self.proxy_port,
-                nodelay=True, timeout=CONNECT_TIMEOUT_SECONDS,
+                nodelay=True, timeout=protocol.CONNECT_TIMEOUT_SECONDS,
             )
 
             aes_key = protocol.generate_aes_key()
@@ -120,12 +130,15 @@ class PortProxyTunnel:
                 raise ConnectionError("handshake failed: " + hello)
 
             self.socket.settimeout(None)
+            self.ready_event.set()
 
             self._reader_loop()
         except Exception as e:
             self.error = str(e)
-            print(f"[port_proxy] tunnel {self.uid} error: {e}")
+            if not self.closed:
+                print(f"{datetime.now()} [port_proxy] tunnel {self.uid} error: {e}")
         finally:
+            self.ready_event.set()
             self.stop()
             unregister_tunnel(self.uid, self)
 
@@ -150,14 +163,21 @@ class PortProxyTunnel:
             self._send_control({"t": "IMOK"})
 
     def _open_stream(self, sid: str) -> None:
+        with self.targets_lock:
+            if sid not in self.targets and len(self.targets) >= self.max_streams:
+                self._send_control({"t": "open_err", "sid": sid, "err": "max streams reached"})
+                return
         try:
             if self.protocol == "udp":
                 target = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 target.connect((self.target_host, self.target_port))
             else:
-                target = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                target = socket.create_connection(
+                    (self.target_host, self.target_port),
+                    timeout=TARGET_CONNECT_TIMEOUT,
+                )
                 target.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                target.connect((self.target_host, self.target_port))
+                target.settimeout(None)
             with self.targets_lock:
                 old = self.targets.pop(sid, None)
                 self.targets[sid] = target

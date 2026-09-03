@@ -43,6 +43,8 @@ class MockProxy:
         self.client_sock = None
         self.send_lock = threading.Lock()
         self.opened_event = threading.Event()
+        self.open_err = {}
+        self.open_err_event = threading.Event()
         self.imok_event = threading.Event()
         self.agent_close_event = threading.Event()
         self.closed = False
@@ -138,7 +140,10 @@ class MockProxy:
         self._agent_reader_loop()
 
     def _accept_client_and_open(self):
-        self.client_sock, _ = self.external_server.accept()
+        try:
+            self.client_sock, _ = self.external_server.accept()
+        except OSError:
+            return
         self.client_sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         self._send_control({"t": "open", "sid": self.sid})
         # forward client -> agent
@@ -164,6 +169,9 @@ class MockProxy:
                     t = obj.get("t")
                     if t == "open_ok":
                         self.opened_event.set()
+                    elif t == "open_err":
+                        self.open_err[obj.get("sid", "")] = obj.get("err", "")
+                        self.open_err_event.set()
                     elif t == "IMOK":
                         self.imok_event.set()
                     elif t == "close":
@@ -312,6 +320,131 @@ def test_checker_missing_params():
     result = checker.get_operation_result()
     assert result["status"] is False
     assert "error" in result
+
+
+def test_check_reports_failure_when_proxy_unreachable():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+
+    checker = PortProxyCheck()
+    checker.run_check({
+        "uid": "fail-uid",
+        "proxy_ip": "127.0.0.1",
+        "proxy_port": port,
+        "proxy_public_key": PROXY_PUBLIC_KEY_B64,
+        "routing": {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+    })
+    result = checker.get_operation_result()
+    assert result["status"] is False
+    assert result.get("error")
+    assert checker.tunnel is not None
+    assert checker.tunnel.closed
+
+
+def test_check_reports_success_when_proxy_reachable():
+    target_server, target_port = start_echo_server()
+    proxy = MockProxy()
+    threading.Thread(target=proxy.run, daemon=True).start()
+    assert proxy.ready_event.wait(timeout=5)
+
+    checker = PortProxyCheck()
+    checker.run_check({
+        "uid": "ok-uid",
+        "proxy_ip": "127.0.0.1",
+        "proxy_port": proxy.agent_port,
+        "proxy_public_key": proxy.public_key_b64,
+        "routing": {"host": "127.0.0.1", "port": target_port, "protocol": "tcp"},
+    })
+    result = checker.get_operation_result()
+    assert result["status"] is True
+    assert checker.tunnel is not None
+    assert not checker.tunnel.closed
+
+    checker.tunnel.stop()
+    proxy.close()
+    target_server.close()
+
+
+def test_max_streams_limit():
+    target_server, target_port = start_multi_echo_server()
+    proxy = MockProxy()
+    threading.Thread(target=proxy.run, daemon=True).start()
+    assert proxy.ready_event.wait(timeout=5)
+
+    tunnel = PortProxyTunnel(
+        "uid-max", "127.0.0.1", proxy.agent_port, proxy.public_key_b64,
+        {"host": "127.0.0.1", "port": target_port, "protocol": "tcp"},
+        max_streams=2,
+    )
+    tunnel.start()
+    assert tunnel.wait_ready(5), "tunnel failed to connect: " + tunnel.error
+
+    client = socket.create_connection(("127.0.0.1", proxy.external_port), timeout=5)
+    assert proxy.opened_event.wait(timeout=5)
+
+    def wait_for(predicate, timeout=5):
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if predicate():
+                return True
+            time.sleep(0.02)
+        return False
+
+    proxy._send_control({"t": "open", "sid": "sid-2"})
+    assert wait_for(lambda: "sid-2" in tunnel.targets), "second stream was not opened"
+
+    proxy._send_control({"t": "open", "sid": "sid-3"})
+    assert wait_for(lambda: "sid-3" in proxy.open_err), "third stream was not rejected"
+    assert proxy.open_err["sid-3"] == "max streams reached"
+
+    old_target = tunnel.targets["sid-test"]
+    proxy._send_control({"t": "open", "sid": "sid-test"})
+    assert wait_for(lambda: tunnel.targets.get("sid-test") is not old_target), \
+        "re-opening an existing sid at the limit was rejected"
+    assert "sid-test" not in proxy.open_err
+
+    client.close()
+    tunnel.stop()
+    proxy.close()
+    target_server.close()
+
+
+def test_open_error_keeps_reader_alive(monkeypatch):
+    import agent.port_proxy.tunnel as tunnel_module
+
+    calls = []
+
+    def fake_create_connection(address, **kwargs):
+        calls.append((address, kwargs))
+        raise OSError("connection timed out")
+
+    monkeypatch.setattr(socket, "create_connection", fake_create_connection)
+
+    proxy = MockProxy()
+    threading.Thread(target=proxy.run, daemon=True).start()
+    assert proxy.ready_event.wait(timeout=5)
+
+    tunnel = PortProxyTunnel(
+        "uid-err", "127.0.0.1", proxy.agent_port, proxy.public_key_b64,
+        {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+    )
+    tunnel.start()
+    assert tunnel.wait_ready(5), "tunnel failed to connect: " + tunnel.error
+
+    proxy._send_control({"t": "open", "sid": "sid-err"})
+    assert proxy.open_err_event.wait(timeout=5), "open_err was not sent"
+    assert proxy.open_err.get("sid-err")
+
+    proxy._send_control({"t": "AREYOUOK"})
+    assert proxy.imok_event.wait(timeout=5), "reader stopped after target connect error"
+
+    assert calls, "target connect was not attempted"
+    assert calls[0][1].get("timeout") == tunnel_module.TARGET_CONNECT_TIMEOUT
+
+    tunnel.stop()
+    proxy.close()
 
 
 def test_tcp_tunnel_echo():

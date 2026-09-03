@@ -27,7 +27,8 @@ class RemoteClient:
     def connect(self):
         try:
             self.socket = protocol.connect_tcp(
-                self.connection_data.get_host(), self.connection_data.get_port()
+                self.connection_data.get_host(), self.connection_data.get_port(),
+                timeout=protocol.CONNECT_TIMEOUT_SECONDS,
             )
 
             self.aes_key = protocol.generate_aes_key()
@@ -39,6 +40,7 @@ class RemoteClient:
             if hello != f"HELLO{self.identity}":
                 raise RemoteConnectException("unexpected handshake: " + hello)
 
+            self.socket.settimeout(None)
             self.ready = True
             self.update_keep_alive()
             self.read_messages()
@@ -92,11 +94,6 @@ class RemoteClient:
         try:
             message = protocol.aes_decrypt(self.aes_key_bytes, message_data).decode('utf-8')
             self.print_thread(f"<<<<<<< {message}")
-
-            if not self.ready and message == f"HELLO{self.identity}":
-                self.update_keep_alive()
-                self.ready = True
-                return
 
             if self.ready:
                 if message.startswith("THREADS: "):

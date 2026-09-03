@@ -2,12 +2,14 @@ import base64
 import json
 import socket
 import threading
+import time
 
 import pytest
 from Crypto.Cipher import PKCS1_v1_5
 from Crypto.PublicKey import RSA
 
 from agent import protocol
+from agent.client.remote_client import RemoteClient
 
 
 def _socketpair():
@@ -200,3 +202,119 @@ def test_perform_handshake():
         assert key_bytes == protocol.derive_key_bytes(aes_key)
     finally:
         server.close()
+
+
+# ---------- remote client connection ----------
+
+class _StubManager:
+    def __init__(self):
+        self.added = []
+        self.removed = []
+
+    def add_thread(self, client):
+        self.added.append(client)
+
+    def remove_thread(self, client):
+        self.removed.append(client)
+
+    def get_thread_id(self, client):
+        return "0"
+
+
+class _FakeConnectionData:
+    def __init__(self, host, port):
+        self._host = host
+        self._port = port
+
+    def get_host(self):
+        return self._host
+
+    def get_port(self):
+        return self._port
+
+
+def _backend_server(private_key, identity, respond=True):
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+
+    def run_server():
+        try:
+            conn, _ = server.accept()
+        except OSError:
+            return
+        try:
+            if respond:
+                frame = protocol.read_frame(conn)
+                decrypted = PKCS1_v1_5.new(private_key).decrypt(frame, None)
+                if decrypted is not None:
+                    handshake = json.loads(decrypted.decode())
+                    key_bytes = protocol.derive_key_bytes(handshake["aes"])
+                    protocol.write_frame(
+                        conn, protocol.aes_encrypt(key_bytes, f"HELLO{identity}".encode())
+                    )
+            while True:
+                data = conn.recv(1)
+                if not data:
+                    break
+        except (OSError, protocol.FrameError, ValueError, TypeError):
+            pass
+        finally:
+            conn.close()
+
+    threading.Thread(target=run_server, daemon=True).start()
+    return server, port
+
+
+def test_connect_uses_timeout_and_clears_it_after_handshake(monkeypatch):
+    server_key = RSA.generate(2048)
+    cipher = PKCS1_v1_5.new(server_key.publickey())
+    server, port = _backend_server(server_key, "identity-1", respond=True)
+
+    calls = []
+    real_connect = protocol.connect_tcp
+
+    def spy_connect(host, port_, **kwargs):
+        calls.append(kwargs)
+        return real_connect(host, port_, **kwargs)
+
+    monkeypatch.setattr(protocol, "connect_tcp", spy_connect)
+
+    manager = _StubManager()
+    client = RemoteClient(manager, _FakeConnectionData("127.0.0.1", port), "identity-1", cipher)
+    thread = threading.Thread(target=client.connect, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.ready:
+        time.sleep(0.02)
+    assert client.ready, "client did not become ready"
+    try:
+        assert calls, "connect_tcp was not called"
+        assert calls[0].get("timeout") == protocol.CONNECT_TIMEOUT_SECONDS
+        assert client.socket is not None
+        assert client.socket.gettimeout() is None
+    finally:
+        client.disconnect()
+        thread.join(timeout=5)
+        server.close()
+
+
+def test_connect_times_out_against_silent_server(monkeypatch):
+    server_key = RSA.generate(2048)
+    cipher = PKCS1_v1_5.new(server_key.publickey())
+    server, port = _backend_server(server_key, "identity-1", respond=False)
+
+    monkeypatch.setattr(protocol, "CONNECT_TIMEOUT_SECONDS", 1)
+
+    manager = _StubManager()
+    client = RemoteClient(manager, _FakeConnectionData("127.0.0.1", port), "identity-1", cipher)
+    started = time.time()
+    client.run()
+    elapsed = time.time() - started
+
+    assert elapsed < 5, f"connect did not time out (took {elapsed:.1f}s)"
+    assert client in manager.removed
+    assert client.socket is None
+    server.close()

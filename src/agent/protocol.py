@@ -9,6 +9,8 @@ from Crypto.Util.Padding import pad, unpad
 
 MAX_FRAME_BYTES = 1024 * 1024
 
+CONNECT_TIMEOUT_SECONDS = 10
+
 KEEPALIVE_IDLE = 30
 KEEPALIVE_INTERVAL = 10
 KEEPALIVE_COUNT = 3
@@ -42,9 +44,7 @@ def aes_decrypt(key_bytes: bytes, data: bytes) -> bytes:
 
 def write_frame(sock: socket.socket, data: bytes, lock=None) -> None:
     with lock if lock is not None else contextlib.nullcontext():
-        sock.sendall(f"len:{len(data)}:".encode("utf-8"))
-        sock.sendall(b"\x00")
-        sock.sendall(data)
+        sock.sendall(f"len:{len(data)}:".encode("utf-8") + b"\x00" + data)
 
 
 def read_frame(sock: socket.socket, max_bytes: int | None = None) -> bytes:
