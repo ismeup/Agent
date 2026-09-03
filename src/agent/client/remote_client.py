@@ -74,7 +74,7 @@ class RemoteClient:
     def read_messages(self):
         while self.socket:
             try:
-                frame = protocol.read_frame(self.socket, max_bytes=None)
+                frame = protocol.read_frame(self.socket, max_bytes=protocol.MAX_FRAME_BYTES)
             except (protocol.FrameError, OSError):
                 self.disconnect()
                 break
