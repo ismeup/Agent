@@ -367,6 +367,70 @@ def test_check_reports_success_when_proxy_reachable():
     target_server.close()
 
 
+def test_wait_ready_false_while_handshake_in_progress(monkeypatch):
+    from agent import protocol
+
+    holder, port = _connection_holder()
+    handshake_started = threading.Event()
+    release = threading.Event()
+
+    def slow_handshake(sock, rsa_cipher, payload, aes_key):
+        handshake_started.set()
+        release.wait(timeout=5)
+        return "HELLO:uid-wait", protocol.derive_key_bytes(aes_key)
+
+    monkeypatch.setattr(protocol, "perform_handshake", slow_handshake)
+
+    tunnel = PortProxyTunnel(
+        "uid-wait", "127.0.0.1", port, PROXY_PUBLIC_KEY_B64,
+        {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+    )
+    tunnel.start()
+    try:
+        assert handshake_started.wait(timeout=5)
+        assert not tunnel.wait_ready(1), "wait_ready reported success while still connecting"
+    finally:
+        release.set()
+        tunnel.stop()
+        holder.close()
+
+
+def test_wait_ready_false_when_stopped_before_socket_assigned(monkeypatch):
+    from agent import protocol
+
+    holder, port = _connection_holder()
+    connect_started = threading.Event()
+    real_connect = protocol.connect_tcp
+
+    def slow_connect(host, port_, **kwargs):
+        connect_started.set()
+        time.sleep(0.5)
+        return real_connect(host, port_, **kwargs)
+
+    monkeypatch.setattr(protocol, "connect_tcp", slow_connect)
+    monkeypatch.setattr(
+        protocol, "perform_handshake",
+        lambda sock, rsa_cipher, payload, aes_key:
+        ("HELLO:uid-pre", protocol.derive_key_bytes(aes_key)),
+    )
+
+    tunnel = PortProxyTunnel(
+        "uid-pre", "127.0.0.1", port, PROXY_PUBLIC_KEY_B64,
+        {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+    )
+    tunnel.start()
+    try:
+        assert connect_started.wait(timeout=5)
+        assert tunnel.socket is None, "stop() must race with socket assignment"
+        tunnel.stop()
+        tunnel.thread.join(timeout=5)
+        assert tunnel.error == "", "race window requires an error-free stop"
+        assert not tunnel.wait_ready(1), "wait_ready reported success for a stopped tunnel"
+    finally:
+        tunnel.stop()
+        holder.close()
+
+
 def test_max_streams_limit():
     target_server, target_port = start_multi_echo_server()
     proxy = MockProxy()

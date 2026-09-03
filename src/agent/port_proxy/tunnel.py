@@ -89,8 +89,7 @@ class PortProxyTunnel:
             self.targets.clear()
 
     def wait_ready(self, timeout: float) -> bool:
-        self.ready_event.wait(timeout)
-        return self.error == ""
+        return self.ready_event.wait(timeout) and self.error == "" and not self.closed
 
     # ---------- protocol helpers ----------
     def _send_encrypted(self, body: bytes) -> None:
