@@ -301,6 +301,57 @@ def test_connect_uses_timeout_and_clears_it_after_handshake(monkeypatch):
         server.close()
 
 
+def test_handshake_includes_capabilities(monkeypatch):
+    server_key = RSA.generate(2048)
+    cipher = PKCS1_v1_5.new(server_key.publickey())
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    server.listen(1)
+    port = server.getsockname()[1]
+    handshake = {}
+
+    def run_server():
+        conn, _ = server.accept()
+        try:
+            frame = protocol.read_frame(conn)
+            decrypted = PKCS1_v1_5.new(server_key).decrypt(frame, None)
+            if decrypted is not None:
+                handshake.update(json.loads(decrypted.decode()))
+                key_bytes = protocol.derive_key_bytes(handshake["aes"])
+                protocol.write_frame(
+                    conn, protocol.aes_encrypt(key_bytes, b"HELLOidentity-cap")
+                )
+            while True:
+                data = conn.recv(1)
+                if not data:
+                    break
+        except (OSError, protocol.FrameError):
+            pass
+        finally:
+            conn.close()
+
+    threading.Thread(target=run_server, daemon=True).start()
+
+    monkeypatch.setattr("agent.client.remote_client.ENABLE_WOL", True)
+    monkeypatch.setattr("agent.client.remote_client.ENABLE_PORT_PROXY", False)
+
+    manager = _StubManager()
+    client = RemoteClient(manager, _FakeConnectionData("127.0.0.1", port), "identity-cap", cipher)
+    thread = threading.Thread(target=client.connect, daemon=True)
+    thread.start()
+    deadline = time.time() + 5
+    while time.time() < deadline and not client.ready:
+        time.sleep(0.02)
+    assert client.ready, "client did not become ready"
+    try:
+        assert handshake.get("capabilities") == {"wake_on_lan": True, "port_proxy": False}
+    finally:
+        client.disconnect()
+        thread.join(timeout=5)
+        server.close()
+
+
 def test_connect_times_out_against_silent_server(monkeypatch):
     server_key = RSA.generate(2048)
     cipher = PKCS1_v1_5.new(server_key.publickey())

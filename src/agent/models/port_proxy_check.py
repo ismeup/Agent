@@ -1,5 +1,6 @@
 from typing import Any, Dict
 
+from agent.config import ENABLE_PORT_PROXY
 from agent.interfaces.checker import Checker
 from agent.port_proxy.tunnel import PortProxyTunnel, READY_TIMEOUT
 
@@ -12,6 +13,10 @@ class PortProxyCheck(Checker):
         self.tunnel: PortProxyTunnel | None = None
 
     def run_check(self, params: Dict[str, Any]) -> None:
+        if not ENABLE_PORT_PROXY:
+            self.status = False
+            self.error = "port proxy is disabled, set ENABLE_PORT_PROXY env variable to enable it"
+            return
         self.uid = str(params.get("uid", ""))
         proxy_host = str(params.get("proxy_ip", ""))
         proxy_port = params.get("proxy_port", 0)

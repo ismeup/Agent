@@ -314,7 +314,40 @@ def test_close_stops_active_tunnel():
     holder.close()
 
 
-def test_checker_missing_params():
+def test_check_rejected_when_port_proxy_disabled(monkeypatch):
+    monkeypatch.setattr("agent.models.port_proxy_check.ENABLE_PORT_PROXY", False)
+    checker = PortProxyCheck()
+    checker.run_check({
+        "uid": "disabled-uid",
+        "proxy_ip": "127.0.0.1",
+        "proxy_port": 1,
+        "proxy_public_key": PROXY_PUBLIC_KEY_B64,
+        "routing": {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+    })
+    result = checker.get_operation_result()
+    assert result["status"] is False
+    assert "disabled" in result.get("error", "")
+    assert checker.tunnel is None
+
+
+def test_start_check_rejects_port_proxy_when_disabled(monkeypatch):
+    monkeypatch.setattr("agent.models.port_proxy_check.ENABLE_PORT_PROXY", False)
+    result = OperationController().start_check({
+        "operation": "port_proxy",
+        "data": {
+            "uid": "disabled-uid",
+            "proxy_ip": "127.0.0.1",
+            "proxy_port": 1,
+            "proxy_public_key": PROXY_PUBLIC_KEY_B64,
+            "routing": {"host": "127.0.0.1", "port": 1, "protocol": "tcp"},
+        },
+    })
+    assert result["status"] is False
+    assert "disabled" in result.get("error", "")
+
+
+def test_checker_missing_params(monkeypatch):
+    monkeypatch.setattr("agent.models.port_proxy_check.ENABLE_PORT_PROXY", True)
     checker = PortProxyCheck()
     checker.run_check({"uid": "", "proxy_ip": "", "proxy_port": 0, "proxy_public_key": ""})
     result = checker.get_operation_result()
@@ -322,7 +355,8 @@ def test_checker_missing_params():
     assert "error" in result
 
 
-def test_check_reports_failure_when_proxy_unreachable():
+def test_check_reports_failure_when_proxy_unreachable(monkeypatch):
+    monkeypatch.setattr("agent.models.port_proxy_check.ENABLE_PORT_PROXY", True)
     s = socket.socket()
     s.bind(("127.0.0.1", 0))
     port = s.getsockname()[1]
@@ -343,7 +377,8 @@ def test_check_reports_failure_when_proxy_unreachable():
     assert checker.tunnel.closed
 
 
-def test_check_reports_success_when_proxy_reachable():
+def test_check_reports_success_when_proxy_reachable(monkeypatch):
+    monkeypatch.setattr("agent.models.port_proxy_check.ENABLE_PORT_PROXY", True)
     target_server, target_port = start_echo_server()
     proxy = MockProxy()
     threading.Thread(target=proxy.run, daemon=True).start()

@@ -6,7 +6,7 @@ import uuid
 from datetime import datetime
 
 from agent import protocol
-from agent.config import AGENT_VERSION
+from agent.config import AGENT_VERSION, ENABLE_PORT_PROXY, ENABLE_WOL
 from agent.exceptions import RemoteConnectException
 from agent.operation_controller.operation_controller import OperationController
 
@@ -34,7 +34,12 @@ class RemoteClient:
             self.aes_key = protocol.generate_aes_key()
             hello, self.aes_key_bytes = protocol.perform_handshake(
                 self.socket, self.rsa_cipher,
-                {"iam": self.identity, "aes": self.aes_key, "version": AGENT_VERSION},
+                {
+                    "iam": self.identity,
+                    "aes": self.aes_key,
+                    "version": AGENT_VERSION,
+                    "capabilities": self._build_capabilities(),
+                },
                 self.aes_key,
             )
             if hello != f"HELLO{self.identity}":
@@ -47,6 +52,12 @@ class RemoteClient:
         except Exception:
             self.disconnect()
             raise RemoteConnectException()
+
+    def _build_capabilities(self) -> dict:
+        return {
+            "wake_on_lan": ENABLE_WOL,
+            "port_proxy": ENABLE_PORT_PROXY,
+        }
 
     def disconnect(self):
         self.ready = False
