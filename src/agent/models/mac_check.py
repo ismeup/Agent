@@ -2,6 +2,7 @@ import platform
 import re
 import socket
 import subprocess
+from agent.config import ENABLE_WOL
 from agent.interfaces.checker import Checker
 
 class MacCheck(Checker):
@@ -11,8 +12,12 @@ class MacCheck(Checker):
         self.host = ""
         self.status = False
         self.mac = ""
+        self.error = ""
 
     def run_check(self, params: dict):
+        if not ENABLE_WOL:
+            self.error = "get mac is disabled, set ENABLE_WOL=1 to enable it"
+            return
         self.host = params.get("host", "")
         if not self.host:
             return
@@ -52,4 +57,7 @@ class MacCheck(Checker):
         return ""
 
     def get_operation_result(self) -> dict:
-        return {"status": self.status, "mac": self.mac}
+        result: dict = {"status": self.status, "mac": self.mac}
+        if self.error:
+            result["error"] = self.error
+        return result
