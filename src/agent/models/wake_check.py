@@ -3,6 +3,7 @@ import re
 import socket
 import struct
 import subprocess
+from agent.config import ENABLE_WOL
 from agent.interfaces.checker import Checker
 
 class WakeOnLanCheck(Checker):
@@ -12,8 +13,12 @@ class WakeOnLanCheck(Checker):
     def __init__(self):
         self.mac = ""
         self.status = False
+        self.error = ""
 
     def run_check(self, params: dict):
+        if not ENABLE_WOL:
+            self.error = "wake on lan is disabled, set ENABLE_WOL=1 to enable it"
+            return
         self.mac = (params.get("mac", "") or "").lower().replace("-", ":")
         if not self.MAC_RE.match(self.mac):
             return
@@ -100,4 +105,7 @@ class WakeOnLanCheck(Checker):
             return "255.255.255.255"
 
     def get_operation_result(self) -> dict:
-        return {"status": self.status}
+        result: dict = {"status": self.status}
+        if self.error:
+            result["error"] = self.error
+        return result

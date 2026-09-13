@@ -163,12 +163,18 @@ sudo journalctl -u ismeup-agent -f
 
 ## Environment Variables
 
-| Variable         | Default               | Description                        |
-|------------------|-----------------------|------------------------------------|
-| `AGENT_KEY_PATH` | `data/identity.key`   | Path to the identity key file      |
-| `ISMEUP_HOST`    | `ismeup.net`          | isMeUp server host                 |
-| `ISMEUP_PORT`    | `8787`                | isMeUp server port                 |
-| `ISMEUP_URL`     | `https://ismeup.net`  | isMeUp API base URL                |
+| Variable            | Default            | Description                                          |
+|---------------------|--------------------|------------------------------------------------------|
+| `AGENT_KEY_PATH`    | `data/identity.key`| Path to the identity key file                        |
+| `ISMEUP_HOST`       | `ismeup.net`       | isMeUp server host                                   |
+| `ISMEUP_PORT`       | `8787`             | isMeUp server port                                   |
+| `ISMEUP_URL`        | `https://ismeup.net`| isMeUp API base URL                                 |
+| `ENABLE_PORT_PROXY` | disabled           | Port forwarding feature; set to `1` to enable        |
+| `ENABLE_WOL`        | enabled            | Wake On Lan feature; set to `0` to disable           |
+
+Port forwarding (port proxy) is disabled by default. The agent accepts `port_proxy` operations from the server only when `ENABLE_PORT_PROXY` is set to `1` (also accepted: `true`, `yes`, `on`).
+
+Wake On Lan is enabled by default. Set `ENABLE_WOL=0` (also accepted: `false`, `no`, `off`) to disable it.
 
 When using Docker, set variables in a `.env` file next to `docker-compose.yaml`:
 
@@ -176,4 +182,8 @@ When using Docker, set variables in a `.env` file next to `docker-compose.yaml`:
 ISMEUP_HOST=ismeup.net
 ISMEUP_PORT=8787
 ISMEUP_URL=https://ismeup.net
+# Enable port forwarding (port proxy) feature
+# ENABLE_PORT_PROXY=1
+# Disable Wake On Lan (enabled by default)
+# ENABLE_WOL=0
 ```

@@ -16,6 +16,8 @@ from agent.models.custom_boolean_check import CustomBooleanCheck
 from agent.models.custom_double_check import CustomDoubleCheck
 from agent.models.mac_check import MacCheck
 from agent.models.wake_check import WakeOnLanCheck
+from agent.models.port_proxy_check import PortProxyCheck
+from agent.models.port_proxy_close import PortProxyCloseCheck
 
 class OperationController:
     def start_check(self, json_object: dict) -> dict:
@@ -46,6 +48,8 @@ class OperationController:
             "custom_double": (Operations.CUSTOM_DOUBLE, CustomDoubleCheck),
             "get_mac": (Operations.GET_MAC, MacCheck),
             "wake": (Operations.WAKE, WakeOnLanCheck),
+            "port_proxy": (Operations.PORT_PROXY, PortProxyCheck),
+            "port_proxy_close": (Operations.PORT_PROXY_CLOSE, PortProxyCloseCheck),
         }
         
         if operation not in mapping:
