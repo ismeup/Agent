@@ -73,7 +73,10 @@ class RemoteClient:
             self.socket = None
 
     def print_thread(self, message: str):
-        print(f"{datetime.now()} TH {self.client_manager.get_thread_id(self)} : {message}")
+        try:
+            print(f"{datetime.now()} TH {self.client_manager.get_thread_id(self)} : {message}")
+        except Exception:
+            pass
 
     def disconnect_by_keep_alive(self):
         if self.ready and (time.time() * 1000 - self.last_success_packet) > 60000:
@@ -131,12 +134,21 @@ class RemoteClient:
                         json_object = json.loads(json_str)
 
                         def run_task():
-                            controller = OperationController()
-                            result = controller.start_check(json_object)
-                            self.send_answer(json.dumps(result), task_uuid)
+                            try:
+                                controller = OperationController()
+                                result = controller.start_check(json_object)
+                                self.send_answer(json.dumps(result), task_uuid)
+                            except Exception as e:
+                                try:
+                                    self.send_answer(json.dumps({"status": False, "error": f"check failed: {e}"}), task_uuid)
+                                except Exception:
+                                    pass
                             self.update_keep_alive()
 
-                        threading.Thread(target=run_task, daemon=True).start()
+                        try:
+                            threading.Thread(target=run_task, daemon=True).start()
+                        except Exception:
+                            self.disconnect()
                     except Exception:
                         self.disconnect()
                     return
@@ -148,12 +160,22 @@ class RemoteClient:
         self.send_bytes(answer_message.encode('utf-8'))
 
     def run(self):
-        self.client_manager.add_thread(self)
-        self.print_thread(f"Connecting to server {self.connection_data.get_host()}:{self.connection_data.get_port()}...")
         try:
-            self.connect()
-        except RemoteConnectException:
-            self.print_thread("Connection aborted!")
-
-        self.print_thread("Closing connection\n")
-        self.client_manager.remove_thread(self)
+            self.client_manager.add_thread(self)
+            self.print_thread(f"Connecting to server {self.connection_data.get_host()}:{self.connection_data.get_port()}...")
+            try:
+                self.connect()
+            except RemoteConnectException:
+                self.print_thread("Connection aborted!")
+            self.print_thread("Closing connection\n")
+        except Exception:
+            try:
+                import traceback
+                traceback.print_exc()
+            except Exception:
+                pass
+        finally:
+            try:
+                self.client_manager.remove_thread(self)
+            except Exception:
+                pass

@@ -1,10 +1,18 @@
-import time
 import threading
+import time
+import traceback
 from typing import List
 from agent.client.connection_data import ConnectionData
 from Crypto.Cipher import PKCS1_v1_5
 
 from agent.client.remote_client import RemoteClient
+
+
+def _safe_print(message: str) -> None:
+    try:
+        print(message)
+    except Exception:
+        pass
 
 
 class ClientManager:
@@ -17,12 +25,21 @@ class ClientManager:
         self.threads_requested = 0
 
         self.start()
-        threading.Thread(target=self._disconnect_by_keep_alive_timeout, daemon=True).start()
+        try:
+            threading.Thread(target=self._disconnect_by_keep_alive_timeout, daemon=True).start()
+        except Exception as e:
+            _safe_print(f"### Failed to start keep-alive thread: {e!r}")
 
     def start(self):
         from agent.client.remote_client import RemoteClient
-        main_client = RemoteClient(self, self.connection_data, self.identity, self.rsa_cipher)
-        threading.Thread(target=main_client.run).start()
+        while True:
+            try:
+                main_client = RemoteClient(self, self.connection_data, self.identity, self.rsa_cipher)
+                threading.Thread(target=main_client.run).start()
+                return
+            except Exception as e:
+                _safe_print(f"### Failed to start client thread: {e!r}. Retrying in 5 seconds")
+                time.sleep(5)
 
     def add_thread(self, remote_client):
         with self.list_synchronizer:
@@ -30,7 +47,7 @@ class ClientManager:
             self._print_threads_count()
 
     def _print_threads_count(self):
-        print(f"### Current thread count: {len(self.remote_clients)}")
+        _safe_print(f"### Current thread count: {len(self.remote_clients)}")
 
     def remove_thread(self, remote_client):
         should_reconnect = False
@@ -44,7 +61,7 @@ class ClientManager:
 
         if should_reconnect:
             self._stop_port_proxy_tunnels()
-            print("### No threads online. Reconnecting in 5 seconds")
+            _safe_print("### No threads online. Reconnecting in 5 seconds")
             time.sleep(5)
             self.start()
 
@@ -53,7 +70,7 @@ class ClientManager:
             from agent.port_proxy.tunnel import stop_all_tunnels
             stop_all_tunnels()
         except Exception as e:
-            print(f"### Failed to stop port-proxy tunnels on Worker disconnect: {e}")
+            _safe_print(f"### Failed to stop port-proxy tunnels on Worker disconnect: {e}")
 
     def request_threads(self, count: int):
         from agent.client.remote_client import RemoteClient
@@ -62,10 +79,14 @@ class ClientManager:
                 self.threads_requested = count
                 current_size = len(self.remote_clients)
                 if current_size < count:
-                    print(f"### Server requested more threads. Current count is {current_size}; Requested: {count}")
+                    _safe_print(f"### Server requested more threads. Current count is {current_size}; Requested: {count}")
                     for _ in range(current_size, count):
                         client = RemoteClient(self, self.connection_data, self.identity, self.rsa_cipher)
-                        threading.Thread(target=client.run).start()
+                        try:
+                            threading.Thread(target=client.run).start()
+                        except Exception as e:
+                            self.threads_requested = max(0, self.threads_requested - 1)
+                            _safe_print(f"### Failed to start additional thread: {e!r}")
 
     def get_thread_id(self, remote_client) -> str:
         try:
@@ -74,8 +95,18 @@ class ClientManager:
             return "-1"
 
     def _disconnect_by_keep_alive_timeout(self):
+        ticks = 0
         while True:
-            with self.list_synchronizer:
-                for remote_client in list(self.remote_clients):
-                    remote_client.disconnect_by_keep_alive()
+            try:
+                with self.list_synchronizer:
+                    for remote_client in list(self.remote_clients):
+                        remote_client.disconnect_by_keep_alive()
+            except Exception:
+                try:
+                    traceback.print_exc()
+                except Exception:
+                    pass
             time.sleep(5)
+            ticks += 1
+            if ticks % 12 == 0:
+                _safe_print(f"### Agent alive. Active threads: {threading.active_count()}")
