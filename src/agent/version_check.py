@@ -27,4 +27,7 @@ def check_agent_version(connection_data: ConnectionData):
 
 
 def start_version_check(connection_data: ConnectionData) -> None:
-    threading.Thread(target=check_agent_version, args=(connection_data,), daemon=True).start()
+    try:
+        threading.Thread(target=check_agent_version, args=(connection_data,), daemon=True).start()
+    except Exception:
+        pass
