@@ -176,7 +176,6 @@ class MockProxy:
                         self.imok_event.set()
                     elif t == "close":
                         self.agent_close_event.set()
-                        break
                 elif mtype == 0x02:
                     body = plain[1:]
                     sl = int.from_bytes(body[:2], "big")
@@ -236,6 +235,26 @@ def start_udp_echo_server():
             except OSError:
                 break
             server.sendto(data, addr)
+
+    threading.Thread(target=run, daemon=True).start()
+    return server, port
+
+
+def start_blackhole_server():
+    server = socket.socket()
+    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server.bind(("127.0.0.1", 0))
+    port = server.getsockname()[1]
+    server.listen(1)
+
+    def run():
+        try:
+            conn, _ = server.accept()
+            conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            while True:
+                time.sleep(3600)
+        except OSError:
+            pass
 
     threading.Thread(target=run, daemon=True).start()
     return server, port
@@ -786,7 +805,7 @@ def test_udp_echo_source_filter_and_idle_close():
     client.sendall(b"ping")
     assert recv_exact(client, 4) == b"ping"
 
-    agent_sock = tunnel.targets["sid-test"]
+    agent_sock = tunnel.targets["sid-test"].target
     attacker = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     attacker.sendto(b"evil", agent_sock.getsockname())
     client.sendall(b"ok")
@@ -831,13 +850,81 @@ def test_reopen_same_sid_replaces_stream():
             break
         time.sleep(0.02)
     assert new_target is not None, "stream was not replaced on re-open"
-    assert old_target.fileno() == -1, "old target socket was not closed (leak)"
+    assert old_target.target.fileno() == -1, "old target socket was not closed (leak)"
 
     client.sendall(b"two")
     assert recv_exact(client, 3) == b"two"
     assert tunnel.targets.get("sid-test") is new_target, "new stream was killed by old relay"
 
     client.close()
+    tunnel.stop()
+    proxy.close()
+    target_server.close()
+
+
+def test_flood_to_blackhole_target_keeps_tunnel_alive():
+    target_server, target_port = start_blackhole_server()
+    proxy = MockProxy()
+    threading.Thread(target=proxy.run, daemon=True).start()
+    assert proxy.ready_event.wait(timeout=5)
+
+    tunnel = PortProxyTunnel(
+        "uid-flood", "127.0.0.1", proxy.agent_port, proxy.public_key_b64,
+        {"host": "127.0.0.1", "port": target_port, "protocol": "tcp"},
+    )
+    tunnel.start()
+
+    client = socket.create_connection(("127.0.0.1", proxy.external_port))
+    assert proxy.opened_event.wait(timeout=5), "agent did not open stream"
+
+    flood_done = threading.Event()
+    sent = 0
+    flood_limit = 32 * 1024 * 1024
+
+    def flood():
+        nonlocal sent
+        chunk = b"x" * 8192
+        try:
+            while sent < flood_limit:
+                n = client.send(chunk)
+                if not n:
+                    break
+                sent += n
+        except OSError:
+            pass
+        finally:
+            flood_done.set()
+
+    flood_thread = threading.Thread(target=flood, daemon=True)
+    flood_thread.start()
+
+    deadline = time.time() + 60
+    path_ready = False
+    last_sent, last_change = 0, time.time()
+    while time.time() < deadline:
+        if flood_done.is_set():
+            path_ready = True
+            break
+        if sent != last_sent:
+            last_sent, last_change = sent, time.time()
+        elif time.time() - last_change > 2:
+            path_ready = True
+            break
+        time.sleep(0.05)
+    assert path_ready, "flood neither finished nor stalled: %d bytes" % sent
+
+    threading.Thread(
+        target=lambda: proxy._send_control({"t": "AREYOUOK"}), daemon=True
+    ).start()
+    assert proxy.imok_event.wait(timeout=10), \
+        "reader loop was blocked by a slow target — keepalive (IMOK) did not flow"
+    assert not tunnel.closed, "tunnel was killed by a single bad client"
+
+    assert proxy.agent_close_event.wait(timeout=5), \
+        "overloaded stream was not torn down (no 'close' to proxy)"
+
+    client.close()
+    flood_thread.join(timeout=5)
     tunnel.stop()
     proxy.close()
     target_server.close()
