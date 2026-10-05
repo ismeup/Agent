@@ -1,5 +1,6 @@
 import base64
 import json
+import queue
 import socket
 import threading
 from datetime import datetime
@@ -14,6 +15,10 @@ TARGET_CONNECT_TIMEOUT = 10
 MAX_STREAMS = 16
 READY_TIMEOUT = protocol.CONNECT_TIMEOUT_SECONDS + 20
 UDP_IDLE_TIMEOUT = 60
+SEND_QUEUE_CAPACITY = 16
+TARGET_WRITE_TIMEOUT = 120
+
+_QUEUE_EOF = object()
 
 _active_tunnels: dict[str, "PortProxyTunnel"] = {}
 _tunnel_lock = threading.Lock()
@@ -46,6 +51,16 @@ def stop_all_tunnels() -> None:
         t.stop()
 
 
+class TargetStream:
+
+    __slots__ = ("target", "send_queue", "open")
+
+    def __init__(self, target: socket.socket):
+        self.target = target
+        self.send_queue = queue.Queue(maxsize=SEND_QUEUE_CAPACITY)
+        self.open = True
+
+
 class PortProxyTunnel:
 
     def __init__(self, uid: str, proxy_host: str, proxy_port: int,
@@ -66,7 +81,7 @@ class PortProxyTunnel:
         self.socket: Optional[socket.socket] = None
         self.send_lock = threading.Lock()
         self.targets_lock = threading.Lock()
-        self.targets: dict[str, socket.socket] = {}
+        self.targets: dict[str, TargetStream] = {}
         self.closed = False
         self.ready_event = threading.Event()
         self.aes_key_bytes: Optional[bytes] = None
@@ -84,9 +99,10 @@ class PortProxyTunnel:
         self.closed = True
         self._close_socket(self.socket)
         with self.targets_lock:
-            for s in self.targets.values():
-                self._close_socket(s)
+            streams = list(self.targets.values())
             self.targets.clear()
+        for stream in streams:
+            self._close_stream_state(stream)
 
     def wait_ready(self, timeout: float) -> bool:
         return self.ready_event.wait(timeout) and self.error == "" and not self.closed
@@ -170,82 +186,121 @@ class PortProxyTunnel:
             if self.protocol == "udp":
                 target = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
                 target.connect((self.target_host, self.target_port))
+                target.settimeout(self.udp_idle_timeout)
             else:
                 target = socket.create_connection(
                     (self.target_host, self.target_port),
                     timeout=TARGET_CONNECT_TIMEOUT,
                 )
                 target.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                target.settimeout(None)
+                target.settimeout(TARGET_WRITE_TIMEOUT)
+            stream = TargetStream(target)
             with self.targets_lock:
                 old = self.targets.pop(sid, None)
-                self.targets[sid] = target
+                self.targets[sid] = stream
             if old is not None:
-                self._close_socket(old)
+                self._close_stream_state(old)
             self._send_control({"t": "open_ok", "sid": sid})
-            threading.Thread(target=self._relay_target_to_proxy, args=(sid,), daemon=True).start()
+            threading.Thread(target=self._relay_target_to_proxy, args=(sid, stream), daemon=True).start()
+            if self.protocol != "udp":
+                threading.Thread(target=self._relay_proxy_to_target, args=(sid, stream), daemon=True).start()
         except Exception as e:
             self._send_control({"t": "open_err", "sid": sid, "err": str(e)})
 
     def _close_stream(self, sid: str) -> None:
         with self.targets_lock:
-            target = self.targets.pop(sid, None)
-        self._close_socket(target)
+            stream = self.targets.pop(sid, None)
+        if stream is not None:
+            self._close_stream_state(stream)
 
-    def _relay_target_to_proxy(self, sid: str) -> None:
-        with self.targets_lock:
-            target = self.targets.get(sid)
-        if target is None:
-            return
+    def _relay_target_to_proxy(self, sid: str, stream: TargetStream) -> None:
+        target = stream.target
         target_eof = False
         try:
             if self.protocol == "udp":
-                target.settimeout(self.udp_idle_timeout)
-                while not self.closed:
+                while not self.closed and stream.open:
                     try:
                         data = target.recv(65535)
                     except socket.timeout:
                         target_eof = True
                         break
-                    if self.closed:
+                    except OSError:
+                        break
+                    if self.closed or not stream.open:
                         break
                     self._send_data(sid, data)
             else:
-                while not self.closed:
-                    chunk = target.recv(8192)
+                while not self.closed and stream.open:
+                    try:
+                        chunk = target.recv(8192)
+                    except socket.timeout:
+                        continue
+                    except OSError:
+                        break
                     if not chunk:
                         target_eof = True
                         break
                     self._send_data(sid, chunk)
-        except OSError:
-            pass
+        finally:
+            stream.open = False
+            with self.targets_lock:
+                owned = self.targets.get(sid) is stream
+                if owned:
+                    self.targets.pop(sid, None)
+            self._close_socket(target)
+            if owned and target_eof and not self.closed:
+                self._send_control({"t": "close", "sid": sid})
+
+    def _relay_proxy_to_target(self, sid: str, stream: TargetStream) -> None:
+        try:
+            while not self.closed and stream.open:
+                item = stream.send_queue.get()
+                if item is _QUEUE_EOF:
+                    break
+                if self.closed or not stream.open:
+                    break
+                try:
+                    stream.target.sendall(item)
+                except OSError:
+                    break
+        finally:
+            self._kill_stream(sid, stream)
+
+    def _kill_stream(self, sid: str, stream: TargetStream) -> None:
+        stream.open = False
         with self.targets_lock:
-            if self.targets.get(sid) is target:
+            owned = self.targets.get(sid) is stream
+            if owned:
                 self.targets.pop(sid, None)
-                owned = True
-            else:
-                owned = False
-        self._close_socket(target)
-        if owned and target_eof and not self.closed:
+        self._close_stream_state(stream)
+        if owned and not self.closed:
             self._send_control({"t": "close", "sid": sid})
+
+    def _close_stream_state(self, stream: TargetStream) -> None:
+        stream.open = False
+        try:
+            stream.send_queue.put_nowait(_QUEUE_EOF)
+        except queue.Full:
+            pass
+        self._close_socket(stream.target)
 
     def _handle_data(self, body: bytes) -> None:
         sid_len = int.from_bytes(body[:2], "big")
         sid = body[2:2 + sid_len].decode("utf-8")
         data = body[2 + sid_len:]
         with self.targets_lock:
-            target = self.targets.get(sid)
-        if target is None:
+            stream = self.targets.get(sid)
+        if stream is None or not stream.open:
             return
         try:
             if self.protocol == "udp":
-                target.send(data)
+                stream.target.send(data)
             else:
-                target.sendall(data)
+                stream.send_queue.put_nowait(data)
+        except queue.Full:
+            self._kill_stream(sid, stream)
         except OSError:
-            if not self.closed:
-                self._send_control({"t": "close", "sid": sid})
-            self._close_stream(sid)
+            self._kill_stream(sid, stream)
 
     @staticmethod
     def _close_socket(sock) -> None:
